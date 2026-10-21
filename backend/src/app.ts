@@ -3,8 +3,12 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes/index.js";
 import { logger } from "./lib/logger.js";
+import { config } from "./config.js";
+import { HttpError } from "./lib/errors.js";
+import { ZodError } from "zod";
 
 const app: Express = express();
+app.disable("x-powered-by");
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 app.use(
@@ -22,19 +26,16 @@ app.use(
 );
 
 // ─── Security / parsing ───────────────────────────────────────────────────────
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(",")
-  : ["http://localhost:5173", "http://localhost:4173"];
-
 app.use(
   cors({
-    origin: process.env.NODE_ENV === "production" ? allowedOrigins : true,
-    credentials: true,
+    origin: config.origins,
+    allowedHeaders: ["Authorization", "Content-Type"],
+    methods: ["GET", "POST", "PATCH", "OPTIONS"],
   })
 );
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "32kb" }));
+app.use((_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 app.use("/api", router);
@@ -47,7 +48,14 @@ app.use((_req: Request, res: Response) => {
 // ─── Global error handler ─────────────────────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  logger.error(err, "Unhandled error");
+  if (err instanceof HttpError) { res.status(err.status).json({ error: err.message }); return; }
+  if (err instanceof ZodError) {
+    res.status(400).json({ error: "Invalid request", fields: [...new Set(err.issues.map(issue => issue.path.join(".")))] });
+    return;
+  }
+  if (err instanceof SyntaxError && "body" in err) { res.status(400).json({ error: "Invalid JSON" }); return; }
+  // SQL errors may contain submitted data, connection details or credentials.
+  logger.error({ requestId: _req.id }, "Request failed");
   res.status(500).json({ error: "Internal server error" });
 });
 

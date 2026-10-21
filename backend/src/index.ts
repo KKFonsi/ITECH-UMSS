@@ -1,7 +1,9 @@
+import { config } from "./config.js";
 import app from "./app.js";
 import { logger } from "./lib/logger.js";
+import { pool } from "./lib/db.js";
 
-const rawPort = process.env.PORT ?? "3000";
+const rawPort = config.PORT;
 const port = Number(rawPort);
 
 if (Number.isNaN(port) || port <= 0) {
@@ -14,14 +16,25 @@ const server = app.listen(port, () => {
 });
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
+let shuttingDown = false;
 function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logger.info({ signal }, "Shutting down");
-  server.close(() => {
-    logger.info("HTTP server closed");
-    process.exit(0);
+  const deadline = setTimeout(() => process.exit(1), 10_000);
+  deadline.unref();
+  server.close(async () => {
+    try {
+      await pool.end();
+      logger.info("HTTP server closed");
+      clearTimeout(deadline);
+      // Let Node drain its handles instead of forcing exit during pending cleanup.
+      process.exitCode = 0;
+    } catch {
+      logger.error("Database pool shutdown failed");
+      process.exitCode = 1;
+    }
   });
-  // Force exit if server doesn't close in time
-  setTimeout(() => process.exit(1), 10_000);
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));

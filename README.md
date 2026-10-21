@@ -10,7 +10,7 @@ A campus maintenance portal for the **Polytechnic University of the Philippines 
 | Backend | Node.js, Express 5, TypeScript |
 | Validation | Zod |
 | Logging | Pino |
-| Database | PostgreSQL + Drizzle ORM *(planned for a future phase)* |
+| Database | PostgreSQL via pg + Supabase Auth |
 | Deployment | Vercel (frontend + serverless API), Replit |
 
 ## Project Structure
@@ -82,13 +82,15 @@ cd ..
 Copy the example environment file and update it with the required values:
 
 ```bash
-cp .env.example .env
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
 ```
 
-If using PostgreSQL, set `DATABASE_URL` in your environment file. On Windows PowerShell, you can copy the file using:
+Set the backend database connection, database CA certificate, Supabase project URL and publishable key, and matching frontend public Auth settings. See [authentication setup and verification](docs/AUTH_INTEGRATION.md). On Windows PowerShell:
 
 ```powershell
-Copy-Item .env.example .env
+Copy-Item backend/.env.example backend/.env
+Copy-Item frontend/.env.example frontend/.env
 ```
 
 ### 3. Run Both Development Servers
@@ -162,7 +164,7 @@ The main application screens are currently defined in `frontend/src/components/u
 
 | Screen | Role | Description |
 | --- | --- | --- |
-| `login` | All | Role-based sign-in for students, admins, and superadmins |
+| `login` | All | Email/password sign-in with server-verified roles |
 | `student-dashboard` | Student | Quick actions, submissions, and GSO access |
 | `qr-review` | Student | Classroom QR scanning, ratings, and defect reports |
 | `report-form` | Student | Maintenance reports by campus, location, and category |
@@ -174,7 +176,7 @@ The main application screens are currently defined in `frontend/src/components/u
 | `equipment-request` | Student | Equipment borrowing and returns |
 | `user-management` | Admin / Superadmin | Account activation and deactivation |
 
-> **Current development status:** The interface includes mock data and simulated authentication. Database persistence, secure role-based authentication, and production-ready work-order APIs are not yet complete.
+> **Current development status:** Supabase authentication and PostgreSQL work-order APIs are implemented. Remaining reservation, equipment, QR-review, directory and audit features are labelled demos. Live authentication, role authorization and persistence checks passed against the configured development project; see [integration verification](docs/AUTH_INTEGRATION.md).
 
 ## License
 

@@ -1,4 +1,9 @@
 import { useState, useEffect } from "react";
+import { useAuth, type Profile, type Role } from "../../lib/auth";
+import { protectedScreen, homeScreen, type Screen } from "../../lib/navigation";
+import { useWorkOrders, WorkOrdersProvider, WorkOrderFeedback } from "../../lib/workOrders";
+import { LiveReportForm } from "./LiveReportForm";
+import { LiveTechnicianQueue } from "./LiveTechnicianQueue";
 import { Dialog } from "./Dialog";
 import { ApplicationShell, StudentShell } from "./layouts";
 import { WorkOrderTable } from "./WorkOrderTable";
@@ -14,24 +19,9 @@ import {
 } from "lucide-react";
 import {
   STUDENTS, TECHNICIANS, ADMINS, SUPER_ADMIN,
-  WORK_ORDERS, AUDIT_LOG, STUDENT_SUBMISSIONS, TECH_QUEUE_INIT,
+  AUDIT_LOG,
   type WorkOrderStatus, type Admin, type Student,
 } from "./mockData";
-
-type Screen =
-  | "login"
-  | "student-dashboard"
-  | "qr-review"
-  | "report-form"
-  | "technician-queue"
-  | "admin-dashboard"
-  | "superadmin-dashboard"
-  | "campus-assistant"
-  | "room-reservation"
-  | "equipment-request"
-  | "user-management";
-
-type Role = "student" | "admin" | "superadmin";
 
 interface CurrentUser {
   name: string;
@@ -52,15 +42,6 @@ function getInitialScreen(): Screen {
     "room-reservation","equipment-request","user-management",
   ];
   return (valid.includes(s as Screen) ? s : "login") as Screen;
-}
-
-function getInitialUser(): CurrentUser | null {
-  const p = new URLSearchParams(window.location.search);
-  const role = p.get("role") as Role | null;
-  if (role === "admin") return { name: "J. Fernandez", id: "admin.jfernandez", role: "admin" };
-  if (role === "superadmin") return { name: SUPER_ADMIN.name, id: SUPER_ADMIN.username, role: "superadmin" };
-  if (role === "student") return { name: "Ezren Dela Golpijon", id: "2021-08471", role: "student" };
-  return null;
 }
 
 // ─── Shared sub-components ────────────────────────────────────────────────────
@@ -95,43 +76,13 @@ function ProfileDropdown({ user, onLogout }: { user: CurrentUser; onLogout: () =
   );
 }
 
-function AuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
-  const [code, setCode] = useState("");
-  return (
-    <Dialog title="GSO Access" onClose={onClose}>
-      <div className="bg-white rounded-3xl p-6 w-full shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-start justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ background: GRADIENT_HEADER }}>
-              <Shield size={18} className="text-white" />
-            </div>
-            <div>
-              <p className="font-bold text-gray-900 text-sm">GSO Access</p>
-              <p className="text-xs text-gray-500">Authenticator required</p>
-            </div>
-          </div>
-          <button aria-label="Close dialog" onClick={onClose} className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
-            <X size={14} className="text-gray-500" />
-          </button>
-        </div>
-        <p className="text-sm text-gray-600 mb-4">Enter your GSO authenticator code to access the Technician Queue.</p>
-        <input aria-label="Enter code"
-          className="w-full bg-gray-50 border border-gray-200 rounded-2xl px-4 py-4 text-center text-gray-500 text-base tracking-widest outline-none mb-1"
-          placeholder="Enter code"
-          value={code}
-          onChange={e => setCode(e.target.value)}
-        />
-        <p className="text-center text-xs text-gray-400 mb-4">Demo: any code will grant access</p>
-        <button
-          onClick={() => code && onSuccess()}
-          className="w-full py-3.5 rounded-2xl text-white font-semibold"
-          style={{ background: code ? "linear-gradient(135deg, #c0392b, #810000)" : "#d4a5a5" }}
-        >
-          Verify & Enter
-        </button>
-      </div>
-    </Dialog>
-  );
+function AuthModal({ onClose }: { onClose: () => void }) {
+  return <Dialog title="GSO technician access" onClose={onClose}>
+    <div className="p-6"><h2 className="text-lg font-bold text-[#810000]">GSO technician access</h2>
+      <p className="my-4 text-sm text-gray-600">The maintenance queue is available to verified technician accounts. Sign out and sign in with your technician email to access your assigned work orders.</p>
+      <button onClick={onClose} className="rounded-xl bg-[#810000] px-5 py-3 text-white">Close</button>
+    </div>
+  </Dialog>;
 }
 
 function StudentBottomNav({ active, navigate, onGsoTap }: {
@@ -164,37 +115,18 @@ function StudentBottomNav({ active, navigate, onGsoTap }: {
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
-function LoginScreen({ navigate }: { navigate: (s: Screen, u?: CurrentUser) => void }) {
-  const [selectedRole, setSelectedRole] = useState<Role>("student");
-  const [username, setUsername] = useState("");
+function LoginScreen({ signIn, accountError, onSignOut }: { signIn: (email: string, password: string) => Promise<void>; accountError: string | null; onSignOut?: () => void }) {
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
-
-  const roleConfig = {
-    student:    { label: "Username / Student ID", placeholder: "e.g. 2021-08471" },
-    admin:      { label: "Admin Username",         placeholder: "e.g. admin.jfernandez" },
-    superadmin: { label: "SuperAdmin Username",    placeholder: "e.g. superadmin.rmendoza" },
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handleLogin = async () => {
+    setBusy(true); setError(null);
+    try { await signIn(email, password); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to sign in"); }
+    finally { setBusy(false); }
   };
-
-  const handleLogin = () => {
-    if (!username || !password) return;
-    if (selectedRole === "student") {
-      const found = STUDENTS.find(s => s.studentId === username || s.name === username);
-      const u = found
-        ? { name: found.name, id: found.studentId, role: "student" as Role }
-        : { name: "Ezren Dela Golpijon", id: "2021-08471", role: "student" as Role };
-      navigate("student-dashboard", u);
-    } else if (selectedRole === "admin") {
-      const found = ADMINS.find(a => a.username === username);
-      const u = found
-        ? { name: found.name, id: found.username, role: "admin" as Role }
-        : { name: "J. Fernandez", id: "admin.jfernandez", role: "admin" as Role };
-      navigate("admin-dashboard", u);
-    } else {
-      navigate("superadmin-dashboard", { name: SUPER_ADMIN.name, id: SUPER_ADMIN.username, role: "superadmin" });
-    }
-  };
-
   return (
     <div className="min-h-[100dvh] flex flex-col items-center justify-center px-6 pt-8 pb-6" style={{ background: LOGIN_BG }}>
       <div className="flex flex-col items-center mb-8 mt-6">
@@ -206,23 +138,14 @@ function LoginScreen({ navigate }: { navigate: (s: Screen, u?: CurrentUser) => v
       </div>
 
       <form onSubmit={e => { e.preventDefault(); handleLogin(); }} className="w-full bg-white rounded-3xl shadow-2xl p-6">
-        <div className="flex rounded-2xl bg-gray-100 p-1 mb-5">
-          {(["student","admin","superadmin"] as Role[]).map(r => (
-            <button type="button" key={r} onClick={() => setSelectedRole(r)}
-              className={`flex-1 py-2 rounded-xl text-xs font-semibold transition-all ${selectedRole === r ? "bg-white text-[#810000] shadow-sm" : "text-gray-500"}`}>
-              {r === "student" ? "Student/User" : r === "admin" ? "Admin" : "SuperAdmin"}
-            </button>
-          ))}
-        </div>
-
         <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">SIGN IN</p>
 
         <div className="mb-4">
-          <label htmlFor="login-username" className="block text-[11px] font-bold text-gray-500 mb-1.5 tracking-wider uppercase">{roleConfig[selectedRole].label}</label>
+          <label htmlFor="login-username" className="block text-[11px] font-bold text-gray-500 mb-1.5 tracking-wider uppercase">Email address</label>
           <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3">
             <User size={16} className="text-gray-400 shrink-0" />
             <input id="login-username" autoComplete="username" className="flex-1 min-w-0 bg-transparent text-sm text-gray-800 outline-none placeholder-gray-400"
-              placeholder={roleConfig[selectedRole].placeholder} value={username} onChange={e => setUsername(e.target.value)} />
+              type="email" required placeholder="you@pup.edu.ph" value={email} onChange={e => setEmail(e.target.value)} />
           </div>
         </div>
 
@@ -231,7 +154,7 @@ function LoginScreen({ navigate }: { navigate: (s: Screen, u?: CurrentUser) => v
           <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-2xl px-4 py-3">
             <Lock size={16} className="text-gray-400 shrink-0" />
             <input className="flex-1 bg-transparent text-sm text-gray-800 outline-none placeholder-gray-400"
-              id="login-password" autoComplete="current-password" type={showPass ? "text" : "password"} placeholder="Enter your password"
+              required id="login-password" autoComplete="current-password" type={showPass ? "text" : "password"} placeholder="Enter your password"
               value={password} onChange={e => setPassword(e.target.value)} />
             <button type="button" aria-label={showPass ? "Hide password" : "Show password"} onClick={() => setShowPass(!showPass)} className="text-gray-400">
               {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -239,14 +162,16 @@ function LoginScreen({ navigate }: { navigate: (s: Screen, u?: CurrentUser) => v
           </div>
         </div>
 
-        <button type="submit" className="w-full py-3.5 rounded-2xl text-white font-semibold text-sm shadow-md active:scale-95 transition-transform"
+        {(error || accountError) && <p role="alert" className="mb-4 text-sm text-red-700">{error || accountError}</p>}
+        <button disabled={busy} type="submit" className="w-full py-3.5 rounded-2xl text-white font-semibold text-sm shadow-md active:scale-95 transition-transform"
           style={{ background: GRADIENT_HEADER }}>
-          Sign In to Portal
+          {busy ? "Signing in?" : "Sign In to Portal"}
         </button>
 
         <p className="text-center text-xs text-gray-400 mt-3">
           Forgot password? Contact the <span className="underline text-gray-600">GSO IT Office</span>
         </p>
+        {onSignOut && <button type="button" onClick={onSignOut} className="mt-3 w-full py-2 text-sm text-[#810000]">Sign out of current session</button>}
       </form>
 
       <p className="text-white/30 text-[10px] mt-6 tracking-widest text-center">
@@ -257,9 +182,10 @@ function LoginScreen({ navigate }: { navigate: (s: Screen, u?: CurrentUser) => v
 }
 
 // ─── STUDENT DASHBOARD ────────────────────────────────────────────────────────
-function StudentDashboard({ user, navigate, logout, submissions }: {
+function StudentDashboard({ user, navigate, logout, submissions, demoSubmissions }: {
   user: CurrentUser; navigate: (s: Screen) => void; logout: () => void;
   submissions: Submission[];
+  demoSubmissions: Submission[];
 }) {
   const [showAuth, setShowAuth] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
@@ -324,6 +250,8 @@ function StudentDashboard({ user, navigate, logout, submissions }: {
           ))}
         </div>
 
+        {submissions.length === 0 && <p className="mb-4 text-sm text-gray-500">You have no maintenance reports yet.</p>}
+        {demoSubmissions.length > 0 && <section className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4"><h3 className="text-sm font-semibold">Demo activity (this session only)</h3>{demoSubmissions.map(item => <p key={item.id} className="mt-2 text-xs">{item.title} ? {item.status}</p>)}</section>}
         <button onClick={handleGsoAccess}
           className="w-full bg-white rounded-2xl border border-gray-100 shadow-sm p-4 flex items-center gap-4 active:scale-95 transition-transform mb-4">
           <div className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0" style={{ background: GRADIENT_HEADER }}>
@@ -331,7 +259,7 @@ function StudentDashboard({ user, navigate, logout, submissions }: {
           </div>
           <div className="flex-1 text-left">
             <p className="font-semibold text-gray-900 text-sm">GSO Technician View</p>
-            <p className="text-xs text-gray-400 flex items-center gap-1 mt-0.5"><Lock size={10} /> Requires authenticator code</p>
+            <p className="text-xs text-gray-400 flex items-center gap-1 mt-0.5"><Lock size={10} /> Requires a technician account</p>
           </div>
           <Shield size={16} className="text-gray-300" />
         </button>
@@ -349,7 +277,7 @@ function StudentDashboard({ user, navigate, logout, submissions }: {
       <StudentBottomNav active="dashboard" navigate={navigate} onGsoTap={handleGsoAccess} />
 
       {showAuth && (
-        <AuthModal onClose={() => setShowAuth(false)} onSuccess={() => { setShowAuth(false); navigate("technician-queue"); }} />
+        <AuthModal onClose={() => setShowAuth(false)} />
       )}
     </div>
   );
@@ -557,7 +485,7 @@ function QrReview({ navigate, onSubmit }: {
       </div>
 
       <StudentBottomNav active="qr" navigate={navigate} onGsoTap={() => setShowAuth(true)} />
-      {showAuth && <AuthModal onClose={() => setShowAuth(false)} onSuccess={() => { setShowAuth(false); navigate("technician-queue"); }} />}
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
     </div>
   );
 }
@@ -641,271 +569,26 @@ const INIT_APP_USERS: AppUser[] = [
   { id: "u3", name: "Dr. M. Bautista",role: "Faculty", department: "College of Sciences" },
 ];
 
-function ReportForm({ navigate, onSubmit }: {
-  navigate: (s: Screen) => void;
-  onSubmit: (sub: Submission) => void;
-}) {
-  const [campus, setCampus] = useState("");
-  const [location, setLocation] = useState("");
-  const [customLocation, setCustomLocation] = useState("");
-  const [categories, setCategories] = useState<string[]>([]);
-  const [desc, setDesc] = useState("");
-  const [showAuth, setShowAuth] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
-  const cats = ["Electrical", "Plumbing", "Structural / Carpentry", "Janitorial / Cleaning", "Others"];
-  const toggleCat = (c: string) => setCategories(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c]);
-
-  const handleSubmit = () => {
-    const locLabel = location === "Others" ? (customLocation || "Others") : location;
-    onSubmit({
-      id: `rpt-${Date.now()}`,
-      title: desc.trim() ? desc.trim().slice(0, 40) : categories[0] || "Maintenance request",
-      location: campus && locLabel ? `${locLabel}, ${campus}` : campus || "Campus",
-      status: "Pending",
-      time: "Just now",
-    });
-    setSubmitted(true);
-    setTimeout(() => navigate("student-dashboard"), 1800);
-  };
-
-  return (
-    <div className="flex flex-col min-h-[100dvh] relative">
-      {/* Success toast */}
-      {submitted && (
-        <div className="absolute top-12 left-4 right-4 z-50 bg-green-600 text-white rounded-2xl px-4 py-3 flex items-center gap-3 shadow-xl">
-          <CheckCircle size={18} />
-          <p className="font-semibold text-sm">Report submitted successfully!</p>
-        </div>
-      )}
-
-      <div className="pt-10 pb-6 px-5" style={{ background: GRADIENT_HEADER }}>
-        <button onClick={() => navigate("student-dashboard")} className="flex items-center gap-2 text-white/80 text-sm mb-4">
-          <ArrowLeft size={16} /> Back
-        </button>
-        <div className="flex items-center gap-2 mb-2">
-          <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center">
-            <TriangleAlert size={13} className="text-white" />
-          </div>
-          <p className="text-white/80 text-[10px] font-bold tracking-widest">GENERAL MAINTENANCE</p>
-        </div>
-        <h2 className="text-white font-bold text-2xl">Submit Maintenance Request</h2>
-        <p className="text-white/70 text-sm">Campus infrastructure issue report</p>
-      </div>
-
-      <div className="flex-1 bg-gray-50 px-4 pt-5 pb-2 space-y-4">
-        {/* Campus */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-          <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">CAMPUS / BUILDING GROUP</p>
-          <div className="relative">
-            <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <select aria-label="Campus" value={campus} onChange={e => setCampus(e.target.value)}
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl pl-8 pr-8 py-3 text-sm text-gray-600 outline-none appearance-none">
-              <option value="">Select campus area...</option>
-              {CAMPUS_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
-            </select>
-            <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-          </div>
-        </div>
-
-        {/* Specific location */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-          <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">SPECIFIC LOCATION</p>
-          {!campus ? (
-            <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-3 opacity-50">
-              <ChevronRight size={14} className="text-gray-400" />
-              <span className="text-sm text-gray-400">Select a campus first</span>
-            </div>
-          ) : (
-            <>
-              <div className="relative">
-                <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <select aria-label="Location"
-                  value={location}
-                  onChange={e => { setLocation(e.target.value); setCustomLocation(""); }}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-xl pl-8 pr-8 py-3 text-sm text-gray-600 outline-none appearance-none"
-                >
-                  <option value="">Select specific location...</option>
-                  {SPECIFIC_LOCATIONS.map(l => <option key={l} value={l}>{l}</option>)}
-                </select>
-                <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-              </div>
-              {location === "Others" && (
-                <input aria-label="e.g. Faculty Lounge, 2nd Floor"
-                  className="mt-3 w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-700 outline-none placeholder-gray-400"
-                  placeholder="e.g. Faculty Lounge, 2nd Floor"
-                  value={customLocation}
-                  onChange={e => setCustomLocation(e.target.value)}
-                />
-              )}
-            </>
-          )}
-        </div>
-
-        {/* Category */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-          <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">ISSUE CATEGORY</p>
-          <div className="flex flex-wrap gap-2">
-            {cats.map(c => (
-              <button key={c} onClick={() => toggleCat(c)}
-                className={`flex items-center gap-1.5 border rounded-xl px-3 py-2 text-xs font-medium transition-colors ${categories.includes(c) ? "text-white border-transparent" : "border-gray-200 text-gray-700"}`}
-                style={categories.includes(c) ? { background: GRADIENT_HEADER } : {}}>
-                <div className={`w-3 h-3 border rounded-sm flex items-center justify-center ${categories.includes(c) ? "border-white" : "border-gray-300"}`}>
-                  {categories.includes(c) && <CheckCircle size={8} className="text-white" />}
-                </div>
-                {c}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Description */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-          <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">DESCRIPTION</p>
-          <textarea aria-label="Maintenance issue description" rows={3} value={desc} onChange={e => setDesc(e.target.value)}
-            placeholder="Describe the issue or broken item here..."
-            className="w-full text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none resize-none placeholder-gray-400" />
-        </div>
-
-        {/* Attach Photo — decorative only (Fix 3) */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-          <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">ATTACH PHOTO</p>
-          <div className="flex items-center justify-center border-2 border-dashed border-gray-200 rounded-xl py-5 gap-3 text-gray-400 select-none cursor-default">
-            <Camera size={20} />
-            <span className="text-sm">Tap to attach a photo</span>
-          </div>
-          <p className="text-[10px] text-gray-400 text-center mt-2">Photo attachment — available in full release</p>
-        </div>
-
-        <button
-          onClick={handleSubmit}
-          disabled={submitted}
-          className="w-full py-3.5 rounded-2xl text-white font-semibold flex items-center justify-center gap-2 mb-2"
-          style={{ background: submitted ? "#86efac" : GRADIENT_HEADER }}>
-          <Send size={16} /> Submit Report
-        </button>
-      </div>
-
-      <StudentBottomNav active="report" navigate={navigate} onGsoTap={() => setShowAuth(true)} />
-      {showAuth && <AuthModal onClose={() => setShowAuth(false)} onSuccess={() => { setShowAuth(false); navigate("technician-queue"); }} />}
-    </div>
-  );
-}
-
-// ─── TECHNICIAN QUEUE ─────────────────────────────────────────────────────────
-function TechnicianQueue({ navigate, user, logout }: { navigate: (s: Screen) => void; user: CurrentUser; logout: () => void }) {
-  const [notes, setNotes] = useState<Record<string, string>>({});
-  const [fixed, setFixed] = useState<Record<string, boolean>>({});
-  const statusColor = {
-    red:    { dot: "bg-red-500",    label: "text-red-600 bg-red-50 border-red-200" },
-    yellow: { dot: "bg-yellow-400", label: "text-yellow-700 bg-yellow-50 border-yellow-200" },
-  };
-
-  return (
-    <ApplicationShell title="Maintenance Queue" roleLabel="Technician" user={user} active="queue" onLogout={logout}
-      items={[
-        { id: "queue", label: "Work-order Queue", icon: Wrench, onSelect: () => {} },
-        { id: "portal", label: "Back to Portal", icon: ArrowLeft, onSelect: () => navigate("student-dashboard") },
-      ]}>
-      <div className="pt-10 pb-5 px-5" style={{ background: GRADIENT_HEADER }}>
-        <button onClick={() => navigate("student-dashboard")} className="flex items-center gap-2 text-white/80 text-sm mb-4">
-          <ArrowLeft size={16} /> Back to Portal
-        </button>
-        <div className="flex items-center gap-2 mb-1">
-          <Shield size={13} className="text-white/80" />
-          <p className="text-white/80 text-[10px] font-bold tracking-widest">GSO TECHNICIAN DASHBOARD</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <h2 className="text-white font-bold text-2xl flex-1">Maintenance Queue</h2>
-          <span className="bg-red-600 text-white text-xs font-bold px-2.5 py-1 rounded-full" aria-live="polite">{TECH_QUEUE_INIT.filter(item => !fixed[item.id]).length} Active</span>
-        </div>
-        <p className="text-white/70 text-xs mt-1">Jun 19, 2026 · Technician: R. Dela Cruz</p>
-      </div>
-
-      <div className="technician-grid">
-        {TECH_QUEUE_INIT.map(item => {
-          const sc = statusColor[item.statusColor];
-          const isFixed = fixed[item.id];
-
-          return (
-            <div key={item.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
-              {isFixed ? (
-                <div className="flex flex-col items-center py-4 gap-2">
-                  <div className="w-12 h-12 rounded-full bg-green-50 flex items-center justify-center">
-                    <PackageCheck size={24} className="text-green-600" />
-                  </div>
-                  <p className="font-semibold text-green-700 text-sm">{item.title}</p>
-                  <p className="text-xs text-gray-400">{item.id} · Work order closed</p>
-                  <span className="text-[10px] font-bold text-green-700 bg-green-50 border border-green-200 rounded-full px-3 py-1">RESOLVED</span>
-                </div>
-              ) : (
-                <>
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className={`w-2 h-2 rounded-full ${sc.dot}`} />
-                    <span className={`text-[10px] font-bold tracking-widest border rounded px-2 py-0.5 ${sc.label}`}>{item.statusLabel}</span>
-                    <span className="ml-auto text-xs text-gray-400 font-mono">{item.id}</span>
-                  </div>
-                  <div className="flex items-start gap-3 mb-3">
-                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${item.statusColor === "red" ? "bg-red-50" : "bg-yellow-50"}`}>
-                      {item.statusColor === "red"
-                        ? <TriangleAlert size={16} className="text-red-400" />
-                        : <ClipboardList size={16} className="text-yellow-500" />}
-                    </div>
-                    <div>
-                      <p className="font-semibold text-gray-900 text-sm">{item.title}</p>
-                      <p className="text-xs text-gray-500 flex items-center gap-1"><MapPin size={10} />{item.location}</p>
-                      <p className="text-xs text-gray-400 mt-0.5">{item.reported}</p>
-                    </div>
-                  </div>
-                  {item.flagged.length > 0 && (
-                    <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 mb-3">
-                      <p className="text-xs font-semibold text-yellow-700 mb-1">Flagged defects from scan:</p>
-                      <p className="text-xs text-yellow-600">{item.flagged.map(f => `· ${f}`).join("  ")}</p>
-                    </div>
-                  )}
-                  <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-1.5">MATERIALS USED / NOTES</p>
-                  <textarea aria-label={`Materials used and notes for ${item.id}`} rows={2}
-                    className="w-full text-xs bg-gray-50 border border-gray-200 rounded-xl p-2.5 outline-none resize-none placeholder-gray-400"
-                    placeholder={item.statusColor === "red" ? "e.g. Replaced 1/2 inch elbow joint, sealant applied..." : "e.g. 3 chairs replaced from GSO stock, lights need new ballast..."}
-                    value={notes[item.id] || ""}
-                    onChange={e => setNotes(n => ({ ...n, [item.id]: e.target.value }))}
-                  />
-                  {/* Fix 4 — Mark as Fixed works per card */}
-                  <button
-                    onClick={() => setFixed(f => ({ ...f, [item.id]: true }))}
-                    className="mt-3 w-full py-3 rounded-2xl text-white font-semibold text-sm flex items-center justify-center gap-2"
-                    style={{ background: "#16a34a" }}>
-                    <CheckCircle size={16} /> Mark as Fixed
-                  </button>
-                </>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-
-    </ApplicationShell>
-  );
-}
-
-// ─── ADMIN DASHBOARD ──────────────────────────────────────────────────────────
 type AdminTab = "dashboard" | "users" | "technicians" | "workorders";
 
-function AdminDashboard({ user, logout }: { user: CurrentUser; logout: () => void }) {
+function AdminDashboard({ user, logout, navigate }: { user: CurrentUser; logout: () => void; navigate: (screen: Screen) => void }) {
   const [tab, setTab] = useState<AdminTab>("dashboard");
   const [search, setSearch] = useState("");
-  const [woData, setWoData] = useState(WORK_ORDERS);
+  const { displayOrders: woData, technicians, update } = useWorkOrders();
   const [roomReqs, setRoomReqs] = useState<RoomRequestItem[]>(INIT_ROOM_REQUESTS);
   const [equipReqs, setEquipReqs] = useState<EquipmentRequestItem[]>(EQUIPMENT_REQUESTS.map(r => ({...r})));
 
   const openCount = woData.filter(w => w.status !== "Resolved").length;
-  const activeTechs = TECHNICIANS.filter(t => t.status === "Active").length;
+  const activeTechs = technicians.length;
 
-  const labels = { dashboard: "Dashboard", users: "Students", technicians: "Technicians", workorders: "Work Orders" };
+  const labels = { dashboard: "Dashboard", users: "Students (demo)", technicians: "Technicians (demo)", workorders: "Work Orders" };
   const icons = { dashboard: BarChart2, users: Users, technicians: Wrench, workorders: FileText };
   return (
     <ApplicationShell title={labels[tab]} roleLabel="Admin" user={user} active={tab} onLogout={logout}
-      items={(["dashboard", "users", "technicians", "workorders"] as AdminTab[]).map(id => ({ id, label: labels[id], icon: icons[id], onSelect: () => setTab(id) }))}>
+      items={[
+        ...(["dashboard", "users", "technicians", "workorders"] as AdminTab[]).map(id => ({ id, label: labels[id], icon: icons[id], onSelect: () => setTab(id) })),
+        { id: "report", label: "New Report", icon: PlusCircle, onSelect: () => navigate("report-form") },
+      ]}>
       <div className="flex-1 bg-gray-50 px-4 pt-4 pb-2">
         {tab === "dashboard" && (
           <>
@@ -913,8 +596,8 @@ function AdminDashboard({ user, logout }: { user: CurrentUser; logout: () => voi
               {[
                 { label: "Open Work Orders",   value: openCount,    icon: <FileText size={16} className="text-red-500" />,    bg: "bg-red-50" },
                 { label: "Active Technicians", value: activeTechs,  icon: <Wrench size={16} className="text-blue-500" />,    bg: "bg-blue-50" },
-                { label: "Avg. Resolution",    value: "2.3 days",   icon: <Clock size={16} className="text-yellow-500" />,   bg: "bg-yellow-50" },
-                { label: "Reports This Week",  value: 7,            icon: <BarChart2 size={16} className="text-green-600" />,bg: "bg-green-50" },
+                { label: "Demo: Avg. Resolution",    value: "2.3 days",   icon: <Clock size={16} className="text-yellow-500" />,   bg: "bg-yellow-50" },
+                { label: "Loaded Work Orders",  value: woData.length,            icon: <BarChart2 size={16} className="text-green-600" />,bg: "bg-green-50" },
               ].map(s => (
                 <div key={s.label} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
                   <div className={`w-8 h-8 rounded-xl ${s.bg} flex items-center justify-center mb-2`}>{s.icon}</div>
@@ -939,7 +622,7 @@ function AdminDashboard({ user, logout }: { user: CurrentUser; logout: () => voi
             </div>
               </section>
               <section className="min-w-0">
-                <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">ROOM RESERVATION REQUESTS</p>
+                <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">DEMO: ROOM RESERVATION REQUESTS</p>
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-5">
               {roomReqs.map((r, i) => (
                 <div key={r.id} className={`px-4 py-3 ${i < roomReqs.length - 1 ? "border-b border-gray-50" : ""}`}>
@@ -959,7 +642,7 @@ function AdminDashboard({ user, logout }: { user: CurrentUser; logout: () => voi
             </div>
               </section>
               <section className="min-w-0">
-                <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">EQUIPMENT REQUESTS</p>
+                <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">DEMO: EQUIPMENT REQUESTS</p>
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
               {equipReqs.map((eq, i) => (
                 <div key={eq.id} className={`px-4 py-3 ${i < equipReqs.length - 1 ? "border-b border-gray-50" : ""}`}>
@@ -1025,7 +708,7 @@ function AdminDashboard({ user, logout }: { user: CurrentUser; logout: () => voi
         )}
 
         {tab === "workorders" && (
-          <WorkOrderTable orders={woData} onReassign={(id, technician) => setWoData(data => data.map(order => order.id === id ? { ...order, assignedTech: technician } : order))} />
+          <WorkOrderTable orders={woData} onReassign={(id, technician) => { void update(id, { assigned_to: technician }).catch(() => {}); }} />
         )}
       </div>
 
@@ -1033,7 +716,7 @@ function AdminDashboard({ user, logout }: { user: CurrentUser; logout: () => voi
   );
 }
 
-type SATab = "dashboard" | "admins" | "users" | "audit";
+type SATab = "dashboard" | "admins" | "users" | "audit" | "workorders";
 
 const AUDIT_ICON: Record<string, React.ReactNode> = {
   reassigned:  <ArrowRightLeft size={14} className="text-blue-500" />,
@@ -1046,6 +729,7 @@ const AUDIT_ICON: Record<string, React.ReactNode> = {
 
 function SuperAdminDashboard({ user, logout, navigate }: { user: CurrentUser; logout: () => void; navigate: (s: Screen) => void }) {
   const [tab, setTab] = useState<SATab>("dashboard");
+  const { displayOrders: workOrders, technicians, update } = useWorkOrders();
   const [filter, setFilter] = useState<"All"|"Students"|"Technicians"|"Admins">("All");
   const [adminList, setAdminList] = useState(ADMINS);
   const [studentList, setStudentList] = useState(STUDENTS);
@@ -1066,23 +750,24 @@ function SuperAdminDashboard({ user, logout, navigate }: { user: CurrentUser; lo
   ];
   const filteredUsers = filter === "All" ? allUsers : allUsers.filter(u => u.type === filter);
 
-  const labels = { dashboard: "Dashboard", admins: "Admins", users: "User Directory", audit: "Audit Log" };
-  const icons = { dashboard: BarChart2, admins: Shield, users: Users, audit: Activity };
+  const labels = { dashboard: "Dashboard", admins: "Admins (demo)", users: "User Directory (demo)", audit: "Audit Log (demo)", workorders: "Work Orders" };
+  const icons = { dashboard: BarChart2, admins: Shield, users: Users, audit: Activity, workorders: FileText };
   return (
     <ApplicationShell title={labels[tab]} roleLabel="SuperAdmin" user={user} active={tab} onLogout={logout}
       items={[
-        ...(["dashboard", "admins", "users", "audit"] as SATab[]).map(id => ({ id, label: labels[id], icon: icons[id], onSelect: () => setTab(id) })),
+        ...(["dashboard", "workorders", "admins", "users", "audit"] as SATab[]).map(id => ({ id, label: labels[id], icon: icons[id], onSelect: () => setTab(id) })),
         { id: "manage", label: "User Management", icon: UserCheck, onSelect: () => navigate("user-management") },
+        { id: "report", label: "New Report", icon: PlusCircle, onSelect: () => navigate("report-form") },
       ]}>
       <div className="flex-1 bg-gray-50 px-4 pt-4 pb-2">
         {tab === "dashboard" && (
           <>
             <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
               {[
-                { label: "Total Users",       value: studentList.length + TECHNICIANS.length, icon: <Users size={16} className="text-violet-600" />, bg: "bg-violet-50" },
-                { label: "Total Admins",      value: adminList.length, icon: <Shield size={16} className="text-blue-600" />, bg: "bg-blue-50" },
-                { label: "Total Technicians", value: TECHNICIANS.length, icon: <Wrench size={16} className="text-orange-600" />, bg: "bg-orange-50" },
-                { label: "Open / Resolved",  value: `${WORK_ORDERS.filter(w=>w.status!=="Resolved").length}/${WORK_ORDERS.filter(w=>w.status==="Resolved").length}`, icon: <FileText size={16} className="text-green-600" />, bg: "bg-green-50" },
+                { label: "Demo: Total Users",       value: studentList.length + TECHNICIANS.length, icon: <Users size={16} className="text-violet-600" />, bg: "bg-violet-50" },
+                { label: "Demo: Total Admins",      value: adminList.length, icon: <Shield size={16} className="text-blue-600" />, bg: "bg-blue-50" },
+                { label: "Active Technicians", value: technicians.length, icon: <Wrench size={16} className="text-orange-600" />, bg: "bg-orange-50" },
+                { label: "Open / Resolved",  value: `${workOrders.filter(w=>w.status!=="Resolved").length}/${workOrders.filter(w=>w.status==="Resolved").length}`, icon: <FileText size={16} className="text-green-600" />, bg: "bg-green-50" },
               ].map(s => (
                 <div key={s.label} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
                   <div className={`w-8 h-8 rounded-xl ${s.bg} flex items-center justify-center mb-2`}>{s.icon}</div>
@@ -1095,7 +780,7 @@ function SuperAdminDashboard({ user, logout, navigate }: { user: CurrentUser; lo
               <section className="min-w-0">
                 <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">MAINTENANCE REQUESTS</p>
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-5">
-              {WORK_ORDERS.slice(0, 4).map((w, i) => (
+              {workOrders.slice(0, 4).map((w, i) => (
                 <div key={w.id} className={`px-4 py-3 flex items-center justify-between ${i < 3 ? "border-b border-gray-50" : ""}`}>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">{w.title}</p>
@@ -1107,7 +792,7 @@ function SuperAdminDashboard({ user, logout, navigate }: { user: CurrentUser; lo
             </div>
               </section>
               <section className="min-w-0">
-                <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">ROOM RESERVATION REQUESTS</p>
+                <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">DEMO: ROOM RESERVATION REQUESTS</p>
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-5">
               {saRoomReqs.map((r, i) => (
                 <div key={r.id} className={`px-4 py-3 ${i < saRoomReqs.length - 1 ? "border-b border-gray-50" : ""}`}>
@@ -1127,7 +812,7 @@ function SuperAdminDashboard({ user, logout, navigate }: { user: CurrentUser; lo
             </div>
               </section>
               <section className="min-w-0">
-                <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">EQUIPMENT REQUESTS</p>
+                <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">DEMO: EQUIPMENT REQUESTS</p>
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden mb-5">
               {saEquipReqs.map((eq, i) => (
                 <div key={eq.id} className={`px-4 py-3 ${i < saEquipReqs.length - 1 ? "border-b border-gray-50" : ""}`}>
@@ -1148,7 +833,7 @@ function SuperAdminDashboard({ user, logout, navigate }: { user: CurrentUser; lo
             {/* Simplified audit preview */}
               </section>
               <section className="min-w-0">
-                <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">RECENT ACTIVITY</p>
+                <p className="text-[10px] font-bold text-gray-400 tracking-widest mb-3">DEMO: RECENT ACTIVITY</p>
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
               {AUDIT_LOG.slice(0, 4).map((a, i) => (
                 <div key={a.id} className={`flex items-center gap-3 px-4 py-3 ${i < 3 ? "border-b border-gray-50" : ""}`}>
@@ -1162,6 +847,8 @@ function SuperAdminDashboard({ user, logout, navigate }: { user: CurrentUser; lo
             </div>
           </>
         )}
+
+        {tab === "workorders" && <WorkOrderTable orders={workOrders} onReassign={(id, technician) => { void update(id, { assigned_to: technician }).catch(() => {}); }} />}
 
         {tab === "admins" && (
           <>
@@ -1480,7 +1167,7 @@ function RoomReservation({ navigate, onSubmit }: { navigate: (s: Screen) => void
       </div>
 
       <StudentBottomNav active="rooms" navigate={navigate} onGsoTap={() => setShowAuth(true)} />
-      {showAuth && <AuthModal onClose={() => setShowAuth(false)} onSuccess={() => { setShowAuth(false); navigate("technician-queue"); }} />}
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
 
       {/* Reserve form modal */}
       {showForm && (
@@ -1667,7 +1354,7 @@ function EquipmentRequest({ navigate, onSubmit }: { navigate: (s: Screen) => voi
       </div>
 
       <StudentBottomNav active="equipment" navigate={navigate} onGsoTap={() => setShowAuth(true)} />
-      {showAuth && <AuthModal onClose={() => setShowAuth(false)} onSuccess={() => { setShowAuth(false); navigate("technician-queue"); }} />}
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
     </div>
   );
 }
@@ -1792,51 +1479,48 @@ export interface Submission {
 }
 
 export function UMSS() {
-  const [screen, setScreen] = useState<Screen>(getInitialScreen);
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(getInitialUser);
-  const [submissions, setSubmissions] = useState<Submission[]>(STUDENT_SUBMISSIONS);
+  const auth = useAuth();
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const logout = () => { void auth.signOut().catch(cause => setLogoutError(cause instanceof Error ? cause.message : "Unable to sign out")); };
+  if (auth.loading) return <StudentShell><div className="flex items-center justify-center p-6" role="status">Verifying your session?</div></StudentShell>;
+  if (!auth.profile) return <StudentShell login><LoginScreen signIn={auth.signIn} accountError={auth.error || logoutError} onSignOut={auth.session ? logout : undefined} /></StudentShell>;
+  return <WorkOrdersProvider key={auth.profile.id + auth.profile.role} user={auth.profile}>
+    {logoutError && <p role="alert" className="bg-red-50 p-3 text-center text-sm text-red-700">{logoutError}</p>}
+    <WorkOrderFeedback />
+    <AuthenticatedUMSS profile={auth.profile} logout={logout} />
+  </WorkOrdersProvider>;
+}
 
-  useEffect(() => {
-    window.scrollTo({ top: 0 });
-  }, [screen]);
-
-  const navigate = (s: Screen, u?: CurrentUser) => {
-    if (u) setCurrentUser(u);
-    setScreen(s);
-  };
-
-  const logout = () => {
-    setCurrentUser(null);
-    setScreen("login");
-  };
-
-  const addSubmission = (sub: Submission) => {
-    setSubmissions(prev => [sub, ...prev]);
-  };
-
-  const user = currentUser ?? { name: "Ezren Dela Golpijon", id: "2021-08471", role: "student" as Role };
-  const studentScreens: Screen[] = ["login", "student-dashboard", "qr-review", "report-form", "campus-assistant", "room-reservation", "equipment-request"];
-  const isStudentScreen = studentScreens.includes(screen);
-
-  return (
-    <>
-      {isStudentScreen && <StudentShell login={screen === "login"}>
-      {screen === "login"               && <LoginScreen navigate={navigate} />}
-      {screen === "student-dashboard"   && <StudentDashboard user={user} navigate={s => setScreen(s)} logout={logout} submissions={submissions} />}
-      {screen === "qr-review"           && <QrReview navigate={s => setScreen(s)} onSubmit={addSubmission} />}
-      {screen === "report-form"         && <ReportForm navigate={s => setScreen(s)} onSubmit={addSubmission} />}
-      {screen === "campus-assistant"    && <CampusAssistant navigate={s => setScreen(s)} />}
-      {screen === "room-reservation"    && <RoomReservation navigate={s => setScreen(s)} onSubmit={addSubmission} />}
-      {screen === "equipment-request"   && <EquipmentRequest navigate={s => setScreen(s)} onSubmit={addSubmission} />}
-      </StudentShell>}
-      {screen === "technician-queue" && <TechnicianQueue navigate={navigate} user={user} logout={logout} />}
-      {screen === "admin-dashboard"     && <AdminDashboard user={user} logout={logout} />}
-      {screen === "superadmin-dashboard"&& <SuperAdminDashboard user={user} logout={logout} navigate={s => setScreen(s)} />}
-      {screen === "user-management" && <ApplicationShell title="User Management" roleLabel="SuperAdmin" user={user} active="manage" onLogout={logout}
-        items={[
-          { id: "dashboard", label: "Dashboard", icon: BarChart2, onSelect: () => navigate("superadmin-dashboard") },
-          { id: "manage", label: "User Management", icon: Users, onSelect: () => {} },
-        ]}><UserManagement navigate={navigate} /></ApplicationShell>}
-    </>
-  );
+function AuthenticatedUMSS({ profile, logout }: { profile: Profile; logout: () => void }) {
+  const [requested, setRequested] = useState<Screen>(getInitialScreen);
+  const [demoSubmissions, setDemoSubmissions] = useState<Submission[]>([]);
+  const { displayOrders } = useWorkOrders();
+  const screen = protectedScreen(profile.role, requested);
+  const user: CurrentUser = { name: profile.full_name, id: profile.university_id || profile.username || profile.id, role: profile.role };
+  const navigate = (next: Screen) => setRequested(protectedScreen(profile.role, next));
+  const addDemoSubmission = (submission: Submission) => setDemoSubmissions(current => [submission, ...current]);
+  const submissions: Submission[] = displayOrders.map(order => ({ id: order.id, title: order.title, location: order.location, status: order.status, time: order.date }));
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [screen]);
+  const studentScreens: Screen[] = ["student-dashboard", "qr-review", "report-form", "campus-assistant", "room-reservation", "equipment-request"];
+  const demoNotice = <p className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs text-amber-900">QR reviews, room/equipment requests, directories and audit previews are demos. Changes to those features are not saved.</p>;
+  return <>
+    {studentScreens.includes(screen) && <StudentShell>
+      {screen !== "report-form" && demoNotice}
+      {screen === "student-dashboard" && <StudentDashboard user={user} navigate={navigate} logout={logout} submissions={submissions} demoSubmissions={demoSubmissions} />}
+      {screen === "qr-review" && <QrReview navigate={navigate} onSubmit={addDemoSubmission} />}
+      {screen === "report-form" && <LiveReportForm onBack={() => navigate(homeScreen(profile.role))} />}
+      {screen === "campus-assistant" && <CampusAssistant navigate={navigate} />}
+      {screen === "room-reservation" && <RoomReservation navigate={navigate} onSubmit={addDemoSubmission} />}
+      {screen === "equipment-request" && <EquipmentRequest navigate={navigate} onSubmit={addDemoSubmission} />}
+    </StudentShell>}
+    {screen === "technician-queue" && <ApplicationShell title="Maintenance Queue" roleLabel="Technician" user={user} active="queue" onLogout={logout}
+      items={[{ id: "queue", label: "Work-order Queue", icon: Wrench, onSelect: () => {} }]}><LiveTechnicianQueue /></ApplicationShell>}
+    {screen === "admin-dashboard" && <>{demoNotice}<AdminDashboard user={user} logout={logout} navigate={navigate} /></>}
+    {screen === "superadmin-dashboard" && <>{demoNotice}<SuperAdminDashboard user={user} logout={logout} navigate={navigate} /></>}
+    {screen === "user-management" && <>{demoNotice}<ApplicationShell title="User Management (demo)" roleLabel="SuperAdmin" user={user} active="manage" onLogout={logout}
+      items={[
+        { id: "dashboard", label: "Dashboard", icon: BarChart2, onSelect: () => navigate("superadmin-dashboard") },
+        { id: "manage", label: "User Management (demo)", icon: Users, onSelect: () => {} },
+      ]}><UserManagement navigate={navigate} /></ApplicationShell></>}
+  </>;
 }
